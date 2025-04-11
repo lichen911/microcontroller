@@ -1,11 +1,11 @@
-#define FLOW_SENSOR_PIN 4 // GPIO pin connected to the sensor's data pin
+#define FLOW_SENSOR_PIN 4
 #define BUZZER_PIN 2
 
-volatile int flowCount = 0; // To count the number of pulses
+volatile int flowValue = 0;
 bool alarmActive = false;
 int alarmThreshold = 20;
 int activeSeconds = 0;
-unsigned long lastTime = 0; // Time tracking for flow rate calculation
+unsigned long lastTime = 0;
 
 unsigned long lastChimeTime = 0;
 int chimeDuration = 100; // ms
@@ -14,9 +14,12 @@ int chimeIntervalDelay = initChimeIntervalDelay;
 int chimeFreq1 = 880;
 int chimeFreq2 = 1047;
 
+float flowRateCutOff = -10.0;
+int flowRateCutOffCountThreshold = 2;
+
 void IRAM_ATTR flowInterrupt()
 {
-  flowCount++; // Increment pulse count for each flow
+  flowValue++; // Increment pulse count for each flow
 }
 
 void setup()
@@ -32,43 +35,71 @@ void setup()
   attachInterrupt(digitalPinToInterrupt(FLOW_SENSOR_PIN), flowInterrupt, RISING);
 }
 
-void doChime(int pin)
+void doChime(int pin, int currentTime)
 {
-  if (millis() - lastChimeTime >= chimeIntervalDelay)
+  if (currentTime - lastChimeTime >= chimeIntervalDelay)
   {
-    lastChimeTime = millis();
+    lastChimeTime = currentTime;
     tone(pin, chimeFreq1, chimeDuration);
     tone(pin, chimeFreq2, chimeDuration);
   }
 }
 
+float calculateRateOfChange(unsigned long currentTime, int currentFlowValue, int &previousFlowValue, unsigned long &previousTime)
+{
+  float rateOfChange = float(currentFlowValue - previousFlowValue) / float(currentTime - previousTime) * 1000;
+  previousFlowValue = currentFlowValue;
+  previousTime = currentTime;
+
+  return rateOfChange;
+}
+
 void loop()
 {
-  // Every second, calculate and print the flow rate
-  if (millis() - lastTime >= 1000)
-  {
-    Serial.print("Flow count: ");
-    Serial.println(flowCount);
+  int currentTime = millis();
+  float rateOfFlowChange = 0;
+  static int previousFlowValue = 0;
+  static unsigned long previousTime = 0;
+  static int flowRateCutOffCount = 0;
 
-    if (flowCount >= alarmThreshold)
+  // Every second, calculate and print the flow rate
+  if (currentTime - lastTime >= 1000)
+  {
+    rateOfFlowChange = calculateRateOfChange(currentTime, flowValue, previousFlowValue, previousTime);
+
+    Serial.print(currentTime);
+    Serial.print(" secs : flow value: ");
+    Serial.print(flowValue);
+    Serial.print(", rate of change: ");
+    Serial.println(rateOfFlowChange);
+
+    if (flowValue >= alarmThreshold && rateOfFlowChange > flowRateCutOff)
     {
       alarmActive = true;
       activeSeconds++;
     }
     else
     {
-      alarmActive = false;
-      activeSeconds = 0;
+      if (flowValue < alarmThreshold || flowRateCutOffCount >= flowRateCutOffCountThreshold)
+      {
+        alarmActive = false;
+        activeSeconds = 0;
+      }
+      else
+      {
+        flowRateCutOffCount++;
+      }
     }
 
     // Reset pulse count for next second
-    flowCount = 0;
-    lastTime = millis();
+    flowValue = 0;
+    lastTime = currentTime;
 
     // Decrease chime interval
     if (activeSeconds > 0 && activeSeconds % 10 == 0)
     {
       chimeIntervalDelay = chimeIntervalDelay / 2;
+      Serial.print("Updating chime interval: ");
       Serial.println(chimeIntervalDelay, activeSeconds % 10 == 0);
     }
     if (activeSeconds == 0 && chimeIntervalDelay != initChimeIntervalDelay)
@@ -80,6 +111,6 @@ void loop()
   // Do chime if it's time
   if (alarmActive)
   {
-    doChime(BUZZER_PIN);
+    doChime(BUZZER_PIN, currentTime);
   }
 }
